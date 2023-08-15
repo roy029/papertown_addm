@@ -234,6 +234,67 @@ class StoreDataset(Dataset):
         chunks = load_chunks(filepath, remove_file=False)
         return chunks[i % self.n_chunks]
 
+class ClassicFileDataset(StoreDataset):
+    def __init__(self, tokenizer, **kwargs):
+        self.config = kwargs
+        self.n_chunks = self.config.get("n_chunks", 1000)
+        self.bufs = []
+        self.tokenizer = tokenizer
+        self.config['tokenizer'] = get_tokenizer_info(tokenizer)
+        self.input_lengths = []
+        self.target_lengths = []
+    
+    def save(self, save_config=True):
+        self.config['n_items'] = self.n_items
+        if len(self.target_lengths) == 0:
+            self.stat_tokens('tokens', self.input_lengths)
+        else:
+            self.stat_tokens('tokens', np.array(self.input_lengths)+np.array(self.target_lengths))
+            self.stat_tokens('inputs', self.input_lengths)
+            self.stat_tokens('labels', self.target_lengths)
+        print(self.config)
+        self.tokenizer = None
+
+    def append(self, d: List[int]):
+        dtype = np.uint16 if max(d) < (2**16)-1 else np.int32
+        if len(d) < self.select_limit:
+            self.bufs.append(np.array(d, dtype=dtype))
+
+    def compact(self, start, end):
+        self.bufs = self.bufs[start:end]
+        return 0, len(self.bufs)
+
+    def __len__(self):
+        return self.n_items
+
+    def __getitem__(self, i):
+        i = i % self.n_items
+        return self.bufs[i]
+
+import gzip
+
+def zopen(filepath):
+    if filepath.endswith('.gz'):
+        return gzip.open(filepath, 'rt')
+    else:
+        return open(filepath, 'r')
+
+def dataset_from_jsonl(file, tokenizer_path, max_length=None):
+    tokenizer = load_tokenizer(tokenizer_path)
+    store = ClassicFileDataset(tokenizer)
+    with zopen(file) as f:
+        for line in f.readlines():
+            d = json.loads(line)
+            if 'out' in d:
+                store.append_pair(d['in'], d['out'], max_length=max_length)
+            elif 'in' in d:
+                store.append_text(d['in'], max_length=max_length)
+            else:
+                store.append_text(d['text'], max_length=max_length)
+    store.save()
+    return store
+
+
 #    cmd = "aria2c -x5 -o {0} {1}".format(url.split('/')[-1], url)
 #    subprocess.call(cmd, shell=True)
 
@@ -243,7 +304,7 @@ def download(url, dir, chunkpath, zext="", sync=True):
     local_file = f"{dir}/{chunkpath}{zext}"
     local_dir, _, _ = local_file.rpartition("/")
     os.makedirs(local_dir, exist_ok=True)
-    print('downloading', remote_file)
+    #print('downloading', remote_file)
     if remote_file.startswith('file:'):
         remote_file = os.path.abspath(remote_file[5:]) # file: をとる
         subprocess.call(f'cp {remote_file} {local_file}', shell=True)
@@ -325,6 +386,9 @@ class ChunkedDataset(Dataset):
         chunks = self.get_chunks(chunkpath)
         return chunks[i % self.n_chunks]
 
+    def compact(self, start, end):
+        return start, end
+
     def reset(self):
         self.cache = {}
         for chunkpath in self.deque:
@@ -373,27 +437,42 @@ def build_inputs_for_seq2seq(data, max_length=None, target_max_length=None):
 # url
 # https://papertown/papertown/nlp
 
-def _load_compose(c, urls):
-    if isinstance(urls, str):
-        urls = urls.split('|')
-    for url in urls:
-        if isinstance(url, str):
-            if url.find(':', 8) > 8:
-                url, _, split = url.rpartition(':')
-                split = float(split)
-                if split > 1.0:
-                    split = int(split)
-                c.add(url, split)
-            else:
-                c.add(url)
-        elif isinstance(url, dict):
-            if 'split' in url:
-                c.add(url['url'], url['split'])
-            else:
-                c.add(url['url'])
+
+def parse_split(url):
+    if '[' in url and url.endswith(']'):
+        url, _, split = url.rpartition('[')
+        start, end = split[:-1].split(':')
+        return url, start, end
+    return url, '', ''
+
+def parse_range(start, end, n_items):
+    try:
+        start = float(start)
+        if start < 1:
+            start = int(n_items * start)
+        else:
+            start = min(int(start), n_items)
+        if start < 0:
+            start = n_items - start
+    except ValueError:
+        start = 0
+    try:
+        end = float(end)
+        if end < 1:
+            end = int(n_items*end)
+        else:
+            end = min(int(end), n_items)
+        if end < 0:
+            end = n_items - end
+    except ValueError:
+        end = n_items
+    if end - start > 0:
+        return start, end
+    return end, start
+
 
 class DataComposer(Dataset):
-    def __init__(self, urls=[], cache_dir = '.', indexer=None, seq2seq=False, max_length=None):
+    def __init__(self, urls=[], cache_dir = '.', indexer=None, train=None, max_length=None):
         self.cache_dir = f'{cache_dir}/cache{random_name()}'
         os.makedirs(self.cache_dir, exist_ok=True)
         self.lock_file = f'{self.cache_dir}/lock'
@@ -401,11 +480,33 @@ class DataComposer(Dataset):
         self.n_items = 0
         self.indexer = indexer
         self.rangetree = RangeTree()
-        _load_compose(self, urls)
-        if seq2seq:
+        if train == 'seq2seq' or train == 't5':
             self.build_fn = build_inputs_for_seq2seq
         else:
             self.build_fn = build_inputs_for_clm
+        if isinstance(urls, str):
+            urls = urls.split('|')
+        for url in urls:
+            self.add(url)
+
+    def add(self, url:str):
+        offset = self.n_items
+        url, start, end = parse_split(url)
+        if url.endswith('.jsonl') or url.endswith('.jsonl.gz'):
+            tokenizer_path, _, file = url.partition('!')
+            dataset = dataset_from_jsonl(file, tokenizer_path, self.max_length)
+        else:
+            dataset = ChunkedDataset(url, self.lock_file, cache_dir=f'{self.cache_dir}/{offset}')
+        n_items = len(dataset)
+        start, end = parse_range(start, end, n_items)
+        n_items = end - start
+        self.n_items += n_items
+        start, end = dataset.compact(start, end)
+        self.rangetree[offset:self.n_items] = (dataset, offset, start, end)
+
+    def set_build(self, build_fn):
+        self.build_fn = build_fn
+
 
     def __enter__(self):
         return self
@@ -415,17 +516,6 @@ class DataComposer(Dataset):
         if os.path.isdir(self.cache_dir):
             shutil.rmtree(self.cache_dir)
 
-    def add(self, url:str, split=1):
-        offset = self.n_items
-        chunk = ChunkedDataset(url, self.lock_file, cache_dir=f'{self.cache_dir}/{offset}')
-        n_items = len(chunk)
-        if isinstance(split, float) and split < 1:
-            n_items = int(n_items * split)
-        elif split != 1:
-            n_items = min(n_items, int(split))
-        self.n_items += n_items
-        self.rangetree[offset:self.n_items] = (chunk, offset)
-
     def __len__(self):
         return self.n_items
 
@@ -433,8 +523,5 @@ class DataComposer(Dataset):
         if self.indexer is not None:
             idx = self.indexer % self.n_items
             self.indexer +=1
-        chunk, offset = self.rangetree[idx]
-        return self.build_fn(chunk[idx-offset], self.max_length)
-
-    def set_build(self, build_fn):
-        self.build_fn = build_fn
+        dataset, offset, start, _ = self.rangetree[idx]
+        return self.build_fn(dataset[idx-offset+start], self.max_length)
