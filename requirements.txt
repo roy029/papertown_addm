@@ -4,5 +4,7 @@ transformers>=4.27.0
 datasets>=2.11.0
 rangetree
 accelerate
+bitsandbytes
 deepspeed
-black 
+sacrebleu
+evaluate
