@@ -413,11 +413,11 @@ class ChunkedDataset(Dataset):
 def build_inputs_for_clm(data, max_length=None):
     if isinstance(max_length, int) and len(data) > max_length:
         data[max_length-1]=data[-1]
-        #return torch.tensor(data[:max_length].astype(np.int32), dtype=torch.long)
-        return torch.from_numpy(data[:max_length])
+        return torch.tensor(data[:max_length].astype(np.int32), dtype=torch.long)
+        #return torch.from_numpy(data[:max_length])
     else:
-        #return torch.tensor(data.astype(np.int32), dtype=torch.long)
-        return torch.from_numpy(data)
+        return torch.tensor(data.astype(np.int32), dtype=torch.long)
+        #return torch.from_numpy(data)
 
 class FileDataset(Dataset):
     def __init__(self, tokenizer, filename, max_length=DEFAULT_MAX_LENGTH):
@@ -545,7 +545,7 @@ def _make_mixer(datasets: Indexer):
     total = sum(lens)
     mixer_base = (total // min(lens))+1
     lens = [int((dlen * mixer_base) / total) for dlen in lens]
-    print('Mixer:', lens)
+    verbose_print('Mixer:', lens)
     mixer = []
     for dlen, ds in zip(lens, datasets):
         mixer.extend([ds]*dlen)
