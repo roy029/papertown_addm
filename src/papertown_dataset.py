@@ -168,42 +168,52 @@ def map_chunk(dir, chunkseq, prefix, map_fn):
     save_chunk(dir, chunkseq, prefix, prefix, 'npz', chunks)
     return [len(chunk) for chunk in chunks]
 
+def _block_add(tokenizer, blocks, tokens, block_size):
+    for i in range(0, len(tokens) - block_size + 1, block_size):  
+        segmented = tokens[i : i + block_size]
+        ids = tokenizer.build_inputs_with_special_tokens(segmented)
+        if len(ids) > 0:
+            blocks.append(ids)
+
+
 def tokenize_block(tokenizer, text, block_size=256, newline_token_id = None):
     blocks = []
     block_size = block_size - tokenizer.num_special_tokens_to_add(pair=False)
+    text = text.replace('\r\n', '<nL>').replace('\n', '<nL>')
     if newline_token_id:
-        lines = text.replace('\n', '<nL>').split('<nL>')
+        if '<nL><nL>' in text:
+            lines = text.split('<nL><nL>')
+            NL = [newline_token_id, newline_token_id]
+        else:
+            lines = text.split('<nL>')
+            NL = [newline_token_id]
+
         buffer = []
         for line in lines:
-            tokens = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(line))
-            tokens.append(newline_token_id)
+            tokens = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(line))+NL
             if len(buffer) + len(tokens) > block_size:
                 if len(buffer) < (block_size * 4 // 5):  # 80% 埋まってなければオーバラップ
                     buffer.extend(tokens) # overlaping
-                    buffer=buffer[:block_size]
-                ids = tokenizer.build_inputs_with_special_tokens(buffer)
-                if len(ids) > (block_size//2):
-                    blocks.append(ids)
-                buffer=[]
+                ids = tokenizer.build_inputs_with_special_tokens(buffer[:block_size])
+                blocks.append(ids)
+                buffer=tokens
                 continue
             buffer.extend(tokens)
-        for line in lines[:-1:-1]:
-            tokens = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(line))
-            tokens.append(newline_token_id)
-            if len(buffer) + len(tokens) > block_size:
-                break
-            buffer = tokens + buffer
-        ids = tokenizer.build_inputs_with_special_tokens(buffer)
-        if len(ids) > (block_size//2):
-            blocks.append(ids)
+        if len(buffer) > (block_size // 2):
+            _block_add(tokenizer, blocks, buffer, block_size)
+        else:
+            buffer = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(lines[-1]))
+            for line in lines[:-1][::-1]:
+                tokens = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(line))+NL
+                if len(buffer) + len(tokens) > block_size:
+                    break
+                buffer = tokens + buffer
+            _block_add(tokenizer, blocks, buffer, block_size)
     else:
-        tokenized_text = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(text))
-        # Truncate in block of block_size
-        for i in range(0, len(tokenized_text) - block_size + 1, block_size):  
-        # 各ブロックの先頭に特殊トークンを追加し、必要に応じてパディングを追加する
-            ids = tokenizer.build_inputs_with_special_tokens(tokenized_text[i : i + block_size])
-            blocks.append(ids)
+        tokens = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(text))
+        _block_add(tokenizer, blocks, tokens, block_size)
     return blocks
+
 
 def tokenize_text(tokenizer, text, max_length=DEFAULT_MAX_LENGTH):
     return tokenizer.encode(text, truncation=True, max_length=max_length)
