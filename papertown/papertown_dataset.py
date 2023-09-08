@@ -247,14 +247,17 @@ class DatasetStore(object):
             pbar = tqdm(N, desc=filename)
         with zopen(filename) as f:
             line = f.readline()
+            c=1
             while line:
                 line = _read_text_from_line(line, jsonl_text)
                 line = _remove_heading_nL(line)
                 blocks, fill = tokenize_block(self.tokenizer, line, fill, self.block_size, by_line=by_line, overlap=overlap)
                 self.extend(blocks)
                 line = f.readline()
+                c+=1
                 if N: 
                     pbar.update()
+                    if c >= N: break
         if N:
             pbar.close()
         self.save()
