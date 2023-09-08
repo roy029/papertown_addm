@@ -1,6 +1,32 @@
+import os
+import time
+import random
+
+import json
+import shutil
+import subprocess
+from typing import List
+
 import re
+from collections import deque
+
+from filelock import FileLock
+import numpy as np
 import hashlib
-from transformers import AutoTokenizer #, T5Tokenizer
+
+import torch
+from transformers import AutoTokenizer
+from torch.utils.data import Dataset
+
+def verbose_print(*args, **kwargs):
+    print('📃', *args, **kwargs)
+
+class SpecialTokenIds():
+    PAD = 0
+    EOS = 1
+    UNK = 2
+    SEP = 11
+    MASK = 12
 
 def _upper_repl(matchobj):
     #print(matchobj, matchobj.group(0))
@@ -25,8 +51,11 @@ def get_tokenizer_info(tokenizer: AutoTokenizer):
     sha256 = hashlib.sha256(allvoc.encode()).hexdigest()
     return dict(
         name_or_path=tokenizer.name_or_path,
+        vocab_domain = tokenizer.name_or_path.replace('/', '_'),
         pad_token_id = tokenizer.pad_token_id,
         eos_token_id = tokenizer.eos_token_id,
+        sep_token_id = tokenizer.sep_token_id,
+        newline_token_id = tokenizer.newline_token_id,
         hash=sha256, 
         vocab_size=tokenizer.vocab_size)
 
@@ -35,6 +64,9 @@ def adapt_tokenizer(tokenizer: AutoTokenizer):
         ids = tokenizer.convert_tokens_to_ids(['<sep>'])
         if ids[0] != tokenizer.unk_token_id:
             tokenizer.sep_token_id = ids[0]
+    ids = tokenizer.convert_tokens_to_ids(['<nL>'])
+    if ids[0] != tokenizer.unk_token_id:
+        tokenizer.newline_token_id = ids[0]
 
     orig_tokenize = tokenizer.tokenize
     def new_tokenize(s, **kwargs):
@@ -72,8 +104,8 @@ def adapt_tokenizer(tokenizer: AutoTokenizer):
         return post_decode(s)
     tokenizer.decode = new_decode
 
-
-def load_tokenizer(tokenizer_path="kkuramitsu/spm-pt16k"):
+def load_tokenizer(tokenizer_path="kkuramitsu/spm-pt16k", adapt=True):
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, legacy=False, trust_remote_code=True, use_fast=False)
-    adapt_tokenizer(tokenizer)
+    if adapt:
+        adapt_tokenizer(tokenizer)
     return tokenizer

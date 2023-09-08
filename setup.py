@@ -15,13 +15,13 @@ def _requires_from_file(filename):
 
 setup(
     name="papertown",
-    version="0.0.2",
+    version="0.0.3",
     license="MIT",
     author="Kimio Kuramitsu",
     description="The PaperTown LLM Project",
-    url="https://github.com/kuramitsu/t5maru",
+    url="https://github.com/kuramitsu/papertown",
     packages=["papertown"],
-    package_dir={"papertown": "src"},
+    package_dir={"papertown": "papertown"},
     package_data={"papertown": ["*/*"]},
     install_requires=_requires_from_file("requirements.txt"),
     entry_points={
