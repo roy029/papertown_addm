@@ -9,8 +9,8 @@ def setup_store():
     parser.add_argument("--tokenizer_path", default='kkuramitsu/spm-pt32k')
     parser.add_argument("--vocab_domain", default='kogi')
     parser.add_argument("--store_path", default="store")
-    parser.add_argument("--num_works", default=0)
-    parser.add_argument("-N", default=None)
+    parser.add_argument("--num_works", type=int, default=0)
+    parser.add_argument("-N", type=int, default=None)
     hparams = parser.parse_args()  # hparams になる
     return hparams
 
