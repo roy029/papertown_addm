@@ -238,10 +238,13 @@ class DatasetStore(object):
         for block in blocks:
             self.append(block)    
 
-    def upload(self, filename, by_line=False, overlap=True, jsonl_text='text'):
+    def upload(self, filename, by_line=False, overlap=True, jsonl_text='text', N=None):
         fill=None
         if not filename.endswith('.jsonl') or not filename.endswith('.jsonl.gz'):
             jsonl_text=None # jsonl でない
+        if N:
+            from tqdm import tqdm
+            pbar = tqdm(N, desc=filename)
         with zopen(filename) as f:
             line = f.readline()
             while line:
@@ -250,6 +253,10 @@ class DatasetStore(object):
                 blocks, fill = tokenize_block(self.tokenizer, line, fill, self.block_size, by_line=by_line, overlap=overlap)
                 self.extend(blocks)
                 line = f.readline()
+                if N: 
+                    pbar.update()
+        if N:
+            pbar.close()
         self.save()
 
     # def append_block(self, text, fill=None, block_size=256, by_line=False, shuffle=True):

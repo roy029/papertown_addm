@@ -26,7 +26,7 @@ setup(
     install_requires=_requires_from_file("requirements.txt"),
     entry_points={
         "console_scripts": [
-            "ptstore=papertown.build_store:main",
+            "papertown_store=papertown.papertown_store:main_store",
         ]
     },
     classifiers=[
