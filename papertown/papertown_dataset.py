@@ -225,7 +225,7 @@ class DatasetStore(object):
                 chunkseq=self.chunkseq,
                 tokens=stat_tokens(self.token_counts)
             ))
-            self.config['n_tokens'] = self.config['tokens']['total'] # 正確な値
+            self.n_tokens = self.config['n_tokens'] = self.config['tokens']['total'] # 正確な値
             self.save_config()
 
     def append(self, block: List[int]):
@@ -244,7 +244,7 @@ class DatasetStore(object):
             jsonl_text=None # jsonl でない
         if N:
             from tqdm import tqdm
-            pbar = tqdm(N, desc=filename)
+            pbar = tqdm(total=N, desc=filename)
         with zopen(filename) as f:
             line = f.readline()
             c=1
@@ -257,10 +257,11 @@ class DatasetStore(object):
                 c+=1
                 if N: 
                     pbar.update()
-                    if c >= N: break
+                    if c > N: break
         if N:
             pbar.close()
         self.save()
+        verbose_print(f'Tokens: {self.n_tokens:,} Items: {self.n_items:,}')
 
     # def append_block(self, text, fill=None, block_size=256, by_line=False, shuffle=True):
     #     blocks, fill = tokenize_block(self.tokenizer, text, fill, block_size, by_line=by_line, shuffle=shuffle)
