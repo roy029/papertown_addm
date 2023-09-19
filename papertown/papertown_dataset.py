@@ -33,11 +33,12 @@ def random_name():
 
 # 設定ファイル
 
-DEFAULT_MAX_LENGTH = 1024
+DEFAULT_BLOCK_SIZE = 2048
+DEFAULT_MAX_LENGTH = 4096
 N_CHUNKS = 4096
 
 DEFAULT_TOKENIZER='kkuramitsu/spm-pt32k'
-DEFAULT_VOCAB_DOMAIN='kogi'
+DEFAULT_VERSION='v1_'
 DEFAULT_CACHE_DIR = safe_dir(os.environ.get('PT_CACHE_DIR', '.'))
 
 def zopen(filepath):
@@ -72,10 +73,6 @@ def save_chunk(dir, chunkseq, prefix, file_ext, chunks):
     filename = chunk_filename(dir, chunkseq, prefix, file_ext)
     if filename.endswith('.npz'):
         np.savez_compressed(filename, *chunks)
-    # elif filename.endswith('.jsonl.gz'):
-    #     with gzip.open(filename, 'wt') as w:
-    #         for chunk in chunks:
-    #             print(json.dumps(chunk, ensure_ascii=False), file=w)
 
 def load_chunk_npz(filename):
     npz = np.load(filename)
@@ -85,24 +82,7 @@ def load_chunk(dir: str, chunkseq: int, prefix: str, file_ext: str):
     filename = chunk_filename(dir, chunkseq, prefix, file_ext, mkdir=False)
     if filename.endswith(".npz"):
         chunks = load_chunk_npz(filename)
-    # elif filename.endswith("jsonl") or filename.endswith('jsonl.gz'):
-    #     chunks=[]
-    #     with zopen(filename) as f:
-    #         for line in f.readlines():
-    #             d = json.loads(line)
-    #             chunks.append(d)
-    # else:
-    #     chunks=[]
-    #     with zopen(filename) as f:
-    #         for line in f.readlines():
-    #             chunks.append(line.strip().replace('<nl>', '<nL>'))
     return chunks
-
-# def map_chunk(dir, chunkseq, prefix, map_fn):
-#     chunks = load_chunk(dir, chunkseq, '', 'jsonl.gz')
-#     chunks = [map_fn(chunk) for chunk in chunks]
-#     save_chunk(dir, chunkseq, prefix, prefix, 'npz', chunks)
-#     return [len(chunk) for chunk in chunks]
 
 def _tokenize_block_simply(blocks: List[List[int]], tokens: List[int], fill=None, block_size=256, overlap=False):
     # とりあえず、シンプルにブロックを分割する
@@ -184,34 +164,40 @@ def stat_tokens(counts):
         'min': int(np.min(data)),
     }
 
+def safe_version(s):
+    s = str(s)
+    if not s.endswith('_'):
+        return f'{s}_'
+    return s
+
 class DatasetStore(object):
-    def __init__(self, dir, vocab_domain=DEFAULT_VOCAB_DOMAIN, **kwargs):
+    def __init__(self, dir, **kwargs):
         self.dir = safe_dir(dir)
         self.config = dict(kwargs)
         self.tokenizer = self.config.get("tokenizer", None)
-        self.vocab_domain = vocab_domain
         if self.tokenizer is None:
             verbose_print(f'tokenizer is unset and using default {DEFAULT_TOKENIZER}')
             self.tokenizer = load_tokenizer(DEFAULT_TOKENIZER)
-            self.vocab_domain = 'kogi'
+        self.config['tokenizer_path'] = str(self.tokenizer.name_or_path)
         self.config['tokenizer'] = get_tokenizer_info(self.tokenizer)
-        self.block_size = self.config.get("block_size", DEFAULT_MAX_LENGTH)
+        self.block_size = self.config.get("block_size", DEFAULT_BLOCK_SIZE)
         self.file_ext = self.config.get("file_ext", "npz")
         self.n_chunks = self.config.get("n_chunks", N_CHUNKS)
+        self.shuffle = self.config.get("shuffle", False)
+        self.version = safe_version(self.config.get('version', DEFAULT_VERSION))
         self.chunkseq = 0
         self.bufs = []
         self.n_items = 0
         self.token_counts = []
-        self.shuffle = self.config.get("shuffle", True)
 
     def save_config(self):
-        config_file = f"{self.dir}/{self.vocab_domain}config.json"
+        config_file = f"{self.dir}/{self.version}config.json"
         with open(config_file, "w") as w:
             json.dump(self.config, w)
     
     def save(self, save_config=True):
         if len(self.bufs) > 0:
-            save_chunk(self.dir, self.chunkseq, self.vocab_domain, self.file_ext, self.bufs)
+            save_chunk(self.dir, self.chunkseq, self.version, self.file_ext, self.bufs)
             self.n_items += len(self.bufs)
             if len(self.bufs) == self.n_chunks:
                 self.chunkseq += 1
@@ -261,7 +247,7 @@ class DatasetStore(object):
         if N:
             pbar.close()
         self.save()
-        verbose_print(f'Tokens: {self.n_tokens:,} Items: {self.n_items:,}')
+        verbose_print(f'Tokens: {self.n_tokens:,} Items: {self.n_items:,} Blocks: {self.block_size:,}')
 
     # def append_block(self, text, fill=None, block_size=256, by_line=False, shuffle=True):
     #     blocks, fill = tokenize_block(self.tokenizer, text, fill, block_size, by_line=by_line, shuffle=shuffle)
@@ -288,7 +274,7 @@ class DatasetStore(object):
     #     return (self.n_items + self.n_chunks - 1) // self.n_chunks
 
     # def __getitem__(self, i):
-    #     return chunk_filename(self.cache_dir, i, self.vocab_domain, self.file_ext, mkdir=False)
+    #     return chunk_filename(self.cache_dir, i, self.version, self.file_ext, mkdir=False)
 
 #    cmd = "aria2c -x5 -o {0} {1}".format(url.split('/')[-1], url)
 #    subprocess.call(cmd, shell=True)
@@ -331,9 +317,12 @@ def _FileLock(lockfile: str):
 
 
 class ChunkedDataset(Dataset):
-    def __init__(self, url, vocab_domain, lock_file=None, cache_dir=".", prefetch=3, **kwargs):
+    def __init__(self, url, version, block_size=None, lock_file=None, cache_dir=".", prefetch=3, **kwargs):
+        """
+        block_size=Noneのときは、再分割しない
+        """
         self.url = safe_dir(url)
-        self.vocab_domain = vocab_domain
+        self.version = version
         self.cache_dir = f'{safe_dir(cache_dir)}/{random_name()}'
         self.lock_file = lock_file
         self.config = self.load_config(kwargs)
@@ -341,6 +330,12 @@ class ChunkedDataset(Dataset):
         self.n_tokens = self.config.get('n_tokens', 0)
         self.n_items = self.config.get("n_items", 0)
         self.n_chunks = self.config.get("n_chunks", N_CHUNKS)
+        if block_size is None or block_size >= self.config.get('block_size', -1):
+            self.block_split = 1  # 再分割しない
+        else:
+            self.block_size = block_size
+            self.block_split = self.config['block_size'] // block_size
+        print('DEBUG: block_split', self.block_split, block_size, self.config.get('block_size', -1))
         self.prefetch=prefetch
         self.queue = deque(maxlen=64)
         self.cache = {}
@@ -348,20 +343,20 @@ class ChunkedDataset(Dataset):
     def load_config(self, kwargs: dict):
         with _FileLock(self.lock_file):
             os.makedirs(self.cache_dir, exist_ok=True)
-            config_file = f"{self.cache_dir}/{self.vocab_domain}config.json"
+            config_file = f"{self.cache_dir}/{self.version}config.json"
             if self.url and not os.path.exists(config_file):
                 download(self.url, self.cache_dir, config_file)
         try:
             with open(config_file) as f:
                 config = json.load(f)
         except Exception as e:
-            verbose_print(f'Error!!: unable to read url={self.url} or vocab_domain={self.vocab_domain}, because of {e}')
+            verbose_print(f'Error!!: unable to read url={self.url} or version={self.version}, because of {e}')
             config = dict(n_items=0, n_tokens=0)
         config.update(kwargs)
         return config
     
     def __len__(self):
-        return self.n_items
+        return self.n_items * self.block_split
 
     def get_chunks(self, filepath):
         if filepath in self.cache:
@@ -385,16 +380,20 @@ class ChunkedDataset(Dataset):
         return chunks
 
     def __getitem__(self, i):
-        #i = i % self.n_items
+        offset = i % self.block_split
+        i = i // self.block_split
         chunkseq = i // self.n_chunks
-        filepath = chunk_filename(self.cache_dir, chunkseq, self.vocab_domain, 'npz')
+        filepath = chunk_filename(self.cache_dir, chunkseq, self.version, 'npz')
         chunks = self.get_chunks(filepath)
         if self.prefetch > 0 and i % self.n_chunks == 0:
             ni = (i+(self.n_chunks*self.prefetch)) % self.n_items
             nchunkseq = ni // self.n_chunks
-            filepath = chunk_filename(self.cache_dir, nchunkseq, self.vocab_domain, 'npz')
+            filepath = chunk_filename(self.cache_dir, nchunkseq, self.version, 'npz')
             download(self.url, self.cache_dir, filepath, sync=False)
-        return chunks[i % self.n_chunks]
+        chunk = chunks[i % self.n_chunks]
+        if self.block_split > 1:
+            return chunk[offset*self.block_size:(offset+1)*self.block_size]
+        return chunk
 
     def compact(self, start, end):
         return start, end
@@ -442,14 +441,14 @@ class FileDataset(Dataset):
         self.chunks = self.chunks[start:end]
         return 0, length
 
-def _parse_split(url, vocab_domain):
+def _parse_split(url, version):
     start, end = '', ''
     if '[' in url and url.endswith(']'):
         url, _, split = url.rpartition('[')
         start, end = split[:-1].split(':')
     if '?' in url:
-        url, _, vocab_domain = url.rpartition('?')
-    return url, vocab_domain, start, end
+        url, _, version = url.rpartition('?')
+    return url, version, start, end
 
 def _parse_range(start, end, n_items):
     try:
@@ -498,17 +497,6 @@ class Indexer(Dataset):
         return self.dataset[self.offset+idx]
     
 
-def load_dataset(url, vocab_domain=DEFAULT_VOCAB_DOMAIN, tokenizer=None, lock_file=None, cache_dir='.'):
-    url, vocab_domain, start, end = _parse_split(url, vocab_domain)
-    if url.endswith('.gz') or url.endswith('.jsonl') or url.endswith('.txt'):
-        if tokenizer is None:
-            raise ValueError('tokenizer must be specified.')
-        dataset = FileDataset(tokenizer, url)
-    else:
-        dataset = ChunkedDataset(url, vocab_domain=vocab_domain, lock_file=lock_file, cache_dir=cache_dir)
-    start, end = _parse_range(start, end, len(dataset))
-    start, end = dataset.compact(start, end)
-    return Indexer(dataset, start, end-start)
 
 
 def _make_mixer(datasets: List[Indexer]):
@@ -525,34 +513,43 @@ def _make_mixer(datasets: List[Indexer]):
 
 
 def build_inputs_for_clm(data, max_length):
-    # if isinstance(max_length, int) and len(data) > max_length:
-    #     return torch.tensor(data[:max_length].astype(np.int32), dtype=torch.long)
-    # else:
-    #     return torch.tensor(data.astype(np.int32), dtype=torch.long)
-    return torch.tensor(data[:max_length].astype(np.int32), dtype=torch.long)
+    return torch.tensor(data[:max_length].astype(np.int64), dtype=torch.long)
 
 class DataComposer(Dataset):
-    def __init__(self, urls=[], 
-                 max_length=DEFAULT_MAX_LENGTH, build_fn=build_inputs_for_clm,
-                 vocab_domain = DEFAULT_VOCAB_DOMAIN, tokenizer=None, 
+    def __init__(self, urls=[], version = DEFAULT_VERSION, 
+                 max_length=DEFAULT_MAX_LENGTH, block_size=None,
+                 build_fn=build_inputs_for_clm, tokenizer=None, 
                  cache_dir = DEFAULT_CACHE_DIR, use_filelock=True):
-        self.max_length = max_length
-        self.vocab_domain = vocab_domain
+        if block_size is None:
+            self.max_length = max_length
+        else:
+            self.max_length = min(max_length, block_size)
+        self.version = safe_version(version)
         self.cache_dir = f'{safe_dir(cache_dir)}/{random_name()}'
         os.makedirs(self.cache_dir, exist_ok=True)
         self.lock_file = f'{self.cache_dir}/lock' if use_filelock else None
         self.build_fn = build_fn
-        self._load_datasets(urls, tokenizer)
+        self._prepare_datasets(urls, tokenizer, block_size)
 
-    def _load_datasets(self, urls, tokenizer):
+    def _prepare_datasets(self, urls, tokenizer, block_size):
         if isinstance(urls, str):
             urls = urls.split('|')
         self.n_items = 0
         self.n_tokens = 0
         datasets = []
         for i, url in enumerate(urls):
-            ds = load_dataset(url, vocab_domain=self.vocab_domain, tokenizer=tokenizer,
-                              lock_file=self.lock_file, cache_dir=f'{self.cache_dir}/{i}')
+            url, version, start, end = _parse_split(url, self.version)
+            if url.endswith('.gz') or url.endswith('.jsonl') or url.endswith('.txt'):
+                if tokenizer is None:
+                    raise ValueError('tokenizer must be specified.')
+                dataset = FileDataset(tokenizer, url)
+            else:
+                dataset = ChunkedDataset(url, version=version, block_size=block_size, 
+                                         lock_file=self.lock_file, 
+                                         cache_dir=f'{self.cache_dir}/{i}')
+            start, end = _parse_range(start, end, len(dataset))
+            start, end = dataset.compact(start, end)
+            ds = Indexer(dataset, start, end-start)
             self.n_items += len(ds)
             self.n_tokens += ds.get_num_of_tokens()
             datasets.append(ds)
