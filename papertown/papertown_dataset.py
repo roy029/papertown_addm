@@ -335,7 +335,7 @@ class ChunkedDataset(Dataset):
         else:
             self.block_size = block_size
             self.block_split = self.config['block_size'] // block_size
-        print('DEBUG: block_split', self.block_split, block_size, self.config.get('block_size', -1))
+        #print('DEBUG: block_split', self.block_split, block_size, self.config.get('block_size', -1))
         self.prefetch=prefetch
         self.queue = deque(maxlen=64)
         self.cache = {}
@@ -551,6 +551,7 @@ class DataComposer(Dataset):
             start, end = dataset.compact(start, end)
             ds = Indexer(dataset, start, end-start)
             self.n_items += len(ds)
+            verbose_print(url, f'tokens={ds.get_num_of_tokens():,}')
             self.n_tokens += ds.get_num_of_tokens()
             datasets.append(ds)
         self.mixer = _make_mixer(datasets)
