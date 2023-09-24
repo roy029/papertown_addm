@@ -418,13 +418,13 @@ def resolve_file(url_base, file_path, cache_dir, sync=True):
     # ダウンロードコマンド
     if remote_file.startswith('file:'):
         remote_file = os.path.abspath(remote_file[5:]) # file: をとる
-        cmd = f'cp {remote_file} {local_file}'
+        cmd = f'cp {remote_file} {cache_file}'
     else:
-        cmd = f"wget -qO {local_file} {remote_file}"
+        cmd = f"wget -qO {cache_file} {remote_file}"
 
     if sync:
         if cache_file_size == 0:
-            verbose_print('Already downloading..', remote_file)
+            verbose_print('ダウンロード中 最大30秒待ちます.', remote_file)
             if wait_for_file(cache_file, 30):
                 return cache_file
         touch(cache_file)
@@ -435,6 +435,8 @@ def resolve_file(url_base, file_path, cache_dir, sync=True):
     if get_file_size(cache_file) == -1:
         touch(cache_file)
         subprocess.call(f"{cmd} &", shell=True)
+    else:
+        verbose_print('既にダウンロード中..', remote_file)
     return None
 
 
