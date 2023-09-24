@@ -365,10 +365,10 @@ def download(url, dir, local_file, sync=True):
     else:
         cmd = f"wget -qO {local_file} {remote_file}"
     if sync:
-        verbose_print('downloading', cmd)
+        verbose_print('Downloading..', cmd)
+        subprocess.call(cmd, shell=True)
     else:
-        cmd = f"{cmd} &"
-    subprocess.call(cmd, shell=True)
+        subprocess.call(f"{cmd} &", shell=True)
 
 # ChunkedDataset
 
@@ -417,8 +417,8 @@ class ChunkedDataset(Dataset):
         try:
             with open(config_file) as f:
                 config = json.load(f)
-        except Exception as e:
-            verbose_print(f'Error!!: unable to read url={self.url} or version={self.version}, because of {e}')
+        except BaseException as e:
+            verbose_print(f'Unable to read url={self.url}')
             config = dict(n_items=0, n_tokens=0)
         config.update(kwargs)
         return config
