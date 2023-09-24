@@ -2,6 +2,7 @@ torch>=2.0.0
 sentencepiece
 transformers>=4.27.0
 datasets>=2.11.0
+accelerate
 nvidia-ml-py3
 bitsandbytes
 deepspeed
