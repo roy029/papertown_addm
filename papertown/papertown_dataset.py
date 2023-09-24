@@ -17,13 +17,8 @@ import torch
 from transformers import AutoTokenizer
 from torch.utils.data import Dataset
 
-from .papertown_utils import verbose_print
-from .papertown_tokenizer import load_tokenizer, get_tokenizer_info
-
-def safe_dir(dir):
-    if dir.endswith('/'):
-        dir = dir[:-1]
-    return dir
+from .papertown_utils import *
+from .papertown_tokenizer import *
 
 _ID = 0
 def random_name():
@@ -37,15 +32,20 @@ DEFAULT_BLOCK_SIZE = 2048
 DEFAULT_MAX_LENGTH = 4096
 N_CHUNKS = 4096
 
-DEFAULT_TOKENIZER='kkuramitsu/spm-pt32k'
-DEFAULT_VERSION='v1_'
-DEFAULT_CACHE_DIR = safe_dir(os.environ.get('PT_CACHE_DIR', '.'))
-
 def zopen(filepath):
     if filepath.endswith('.gz'):
         return gzip.open(filepath, 'rt')
     else:
         return open(filepath, 'r')
+
+def get_file_lines(filepath):
+    with zopen(filepath) as f:
+        line = f.readline()
+        c=1
+        while line:
+            line = f.readline()
+            c+=1
+    return c
 
 def _read_text_from_line(line, key, sep=None):
     if key is None and sep is None:
@@ -60,6 +60,7 @@ def _remove_heading_nL(s):
     while s.startswith('<nL>'):
         s = s[4:]
     return s
+
 
 def chunkseq_to_filepath(chunkseq:int, prefix:str, file_ext:str):
     dir = f"{(chunkseq//100):04d}"
@@ -88,6 +89,7 @@ def load_chunk(dir: str, chunkseq: int, prefix: str, file_ext: str):
         chunks = load_chunk_npz(filename)
     return chunks
 
+"""
 def _tokenize_block_simply(blocks: List[List[int]], tokens: List[int], fill=None, block_size=256, overlap=False):
     # とりあえず、シンプルにブロックを分割する
     for i in range(0, len(tokens) - block_size + 1, block_size):  
@@ -141,7 +143,7 @@ def tokenize_block(tokenizer, text, fill=None, block_size=256, by_line=False, ov
     tokens = tokenizer.encode(text)
     fill = _tokenize_block_simply(blocks, tokens, fill, block_size, overlap=overlap)
     return blocks, fill
-
+"""
 
 empty_tokens = []
 
@@ -159,7 +161,9 @@ def _block_simply(blocks: List[List[int]], tokens: List[int], block_size=DEFAULT
         remaining_tokens = remaining_tokens[block_size:]
     return remaining_tokens
 
-def tokenize_block_sep(tokenizer, blocks: List[List[int]], text:str, block_size=DEFAULT_BLOCK_SIZE, fill=empty_tokens, sep='<seP>', overlap=0):
+def tokenize_block_sep(tokenizer, blocks: List[List[int]], text:str, 
+                       block_size=DEFAULT_BLOCK_SIZE, 
+                       fill=empty_tokens, sep=DEFAULT_SEP, overlap=0):
     chunks = [tokenizer.convert_tokens_to_ids(tokenizer.tokenize(line)) for line in text.split(sep)]
     chunks[-1] = tokenizer.build_inputs_with_special_tokens(chunks[-1])
     chunk = []
@@ -169,17 +173,12 @@ def tokenize_block_sep(tokenizer, blocks: List[List[int]], text:str, block_size=
         if len(chunk) >= block_size:
             blocks.append(chunk[:block_size])
             if block_size - prev_length < overlap:
-                chunk = _block_simply(blocks, ids, block_size)
+                chunk = [_block_simply(blocks, ids, block_size)]
             else:
-                chunk = _block_simply(blocks, chunk[block_size:], block_size)
+                chunk = [_block_simply(blocks, chunk[block_size:], block_size)]
     if len(chunk) > 4:
         return _block_simply(blocks, chunk, block_size, fill)
     return fill
-
-def get_ellipsis_token_id(tokenizer, default_id):
-    if hasattr(tokenizer, 'ellipsis_token_id'):
-        return tokenizer.ellipsis_token_id
-    return default_id
 
 def tokenize_text(tokenizer, blocks, text, block_size=DEFAULT_BLOCK_SIZE):
     inputs = tokenizer.encode(text)
@@ -187,42 +186,72 @@ def tokenize_text(tokenizer, blocks, text, block_size=DEFAULT_BLOCK_SIZE):
         half_size = block_size // 2
         prefix = inputs[:half_size]
         suffix = inputs[-half_size:]
-        prefix[-1] = get_ellipsis_token_id(tokenizer, prefix[-1])
+        prefix[-1] = find_ellipsis_token_id(tokenizer)
         inputs = prefix + suffix
     blocks.append(inputs)
-    return None
+    return empty_tokens
 
 def tokenize_pair(tokenizer, blocks, inputs, labels, block_size=DEFAULT_BLOCK_SIZE):
     inputs = tokenizer.encode(inputs)
     labels = tokenizer.encode(labels)
     if len(labels) > block_size:
         # ラベルの方が大きい場合は諦める
-        return None
+        return empty_tokens
     if len(inputs)+len(labels) > block_size:
         # ラベルは完全に残す
         half_size = (block_size - len(labels)) // 2
         prefix = inputs[:half_size]
         suffix = inputs[-half_size:]
-        prefix[-1] = get_ellipsis_token_id(tokenizer, prefix[-1])
+        prefix[-1] = find_ellipsis_token_id(tokenizer)
         inputs = prefix + suffix
     blocks.append(inputs+labels)
-    return None
+    return empty_tokens
 
-def tokenize_line(tokenizer, blocks, line:str, block_size=DEFAULT_BLOCK_SIZE, fill=empty_tokens,
-                  padding=False, jsonl_key=None, sep='<seP>', overlap=0):
-    if jsonl_key is None:
-        line = line.rstrip()
-    else:
+def tokenize_line(tokenizer, blocks, line:str, 
+                  block_size=DEFAULT_BLOCK_SIZE, fill=empty_tokens,
+                  padding=False, jsonl_key='text', sep=DEFAULT_SEP, overlap=0):
+    if jsonl_key is not None:
         d = json.loads(line)
         if 'out' in d and 'in' in d:
             return tokenize_pair(tokenizer, blocks, d['in'], d['out'], block_size=block_size)
         if 'inputs' in d and 'labels' in d:
             return tokenize_pair(tokenizer, blocks, d['inputs'], d['labels'], block_size=block_size)
         line = d[jsonl_key]
+    else:
+        line = line.rstrip()
     if padding:
         return tokenize_text(tokenizer, blocks, line, block_size=block_size)
     else:
         return tokenize_block_sep(tokenizer, blocks, line, block_size, fill, sep, overlap)
+
+def tokenize_file(tokenizer, filename, update_fn=None, 
+           block_size=DEFAULT_BLOCK_SIZE, padding=True, overlap=0, N=None, jsonl_key='text', sep=DEFAULT_SEP):
+    if N == -1:
+        N = get_file_lines(filename)
+    if N:
+        from tqdm import tqdm
+        pbar = tqdm(total=N, desc=filename)
+    if '.jsonl' not in filename:
+        jsonl_key = None # jsonl でない
+    blocks=[]
+    fill = empty_tokens
+    with zopen(filename) as f:
+        line = f.readline()
+        c=1
+        while line:
+            fill = tokenize_line(tokenizer, blocks, line, block_size, fill, jsonl_key=jsonl_key, padding=padding, overlap=overlap, sep=sep)
+            if update_fn is not None:
+                update_fn(blocks)
+                blocks=[]
+            line = f.readline()
+            c+=1
+            if N: 
+                pbar.update()
+                if c > N: break
+    if N:
+        pbar.close()
+    return blocks
+
 
 def stat_tokens(counts):
     if len(counts) == 0:
@@ -299,80 +328,13 @@ class DatasetStore(object):
         for block in blocks:
             self.append(block)    
 
-    def upload(self, filename, by_line=False, overlap=True, jsonl_text='text', N=None):
-        fill=None
-        if not filename.endswith('.jsonl') or not filename.endswith('.jsonl.gz'):
-            jsonl_text=None # jsonl でない
-        if N:
-            from tqdm import tqdm
-            pbar = tqdm(total=N, desc=filename)
-        with zopen(filename) as f:
-            line = f.readline()
-            c=1
-            while line:
-                line = _read_text_from_line(line, jsonl_text)
-                line = _remove_heading_nL(line)
-                blocks, fill = tokenize_block(self.tokenizer, line, fill, self.block_size, by_line=by_line, overlap=overlap)
-                self.extend(blocks)
-                line = f.readline()
-                c+=1
-                if N: 
-                    pbar.update()
-                    if c > N: break
-        if N:
-            pbar.close()
-        self.save()
+    def upload(self, filename, padding=False, overlap=0, N=None, jsonl_key='text', sep=DEFAULT_SEP):
+        tokenize_file(self.tokenizer, filename=filename, N=N, jsonl_key=jsonl_key, 
+            update_fn=self.extend, 
+            block_size=self.block_size, padding=padding, overlap=overlap, sep=sep
+        )
         verbose_print(f'Tokens: {self.n_tokens:,} Items: {self.n_items:,} Blocks: {self.block_size:,}')
 
-    def upload2(self, filename, padding=True, overlap=0, N=None, jsonl_key='text', sep='<seP>'):
-        if not filename.endswith('.jsonl') or not filename.endswith('.jsonl.gz'):
-            jsonl_key=None # jsonl でない
-        if N:
-            from tqdm import tqdm
-            pbar = tqdm(total=N, desc=filename)
-        fill=empty_tokens
-        with zopen(filename) as f:
-            line = f.readline()
-            c=1
-            while line:
-                blocks=[]
-                fill = tokenize_line(self.tokenizer, blocks, line, self.block_size, fill, jsonl_key=jsonl_key)
-                # line = _read_text_from_line(line, jsonl_text)
-                # line = _remove_heading_nL(line)
-                # blocks, fill = tokenize_block(self.tokenizer, line, fill, self.block_size, by_line=by_line, overlap=overlap)
-                self.extend(blocks)
-                line = f.readline()
-                c+=1
-                if N: 
-                    pbar.update()
-                    if c > N: break
-        if N:
-            pbar.close()
-        verbose_print(f'Tokens: {self.n_tokens:,} Items: {self.n_items:,} Blocks: {self.block_size:,}')
-
-
-def safe_join(dir, file):
-    if dir.endswith('/'):
-        dir = dir[:-1]
-    if file.startswith('/'):
-        file = file[1:]
-    return f'{dir}/{file}'
-
-# def download(url, dir, local_file, sync=True):
-#     file=local_file[len(dir)+1:]
-#     remote_file = safe_join(url, file)
-#     local_dir, _, _ = local_file.rpartition("/")
-#     os.makedirs(local_dir, exist_ok=True)
-#     if remote_file.startswith('file:'):
-#         remote_file = os.path.abspath(remote_file[5:]) # file: をとる
-#         cmd = f'cp {remote_file} {local_file}'
-#     else:
-#         cmd = f"wget -qO {local_file} {remote_file}"
-#     if sync:
-#         verbose_print('Downloading..', cmd)
-#         subprocess.call(cmd, shell=True)
-#     else:
-#         subprocess.call(f"{cmd} &", stderr=subprocess.DEVNULL, shell=True)
 
 from pathlib import Path
 
@@ -386,7 +348,6 @@ def touch(file_path):
     file = Path(file_path)
     file.touch(exist_ok=True)
 
-import os
 import time
 
 def wait_for_file(file_path, timeout=60):
@@ -554,27 +515,22 @@ class ChunkedDataset(Dataset):
         self.deque = deque(maxlen=64)
 
 class FileDataset(Dataset):
-    def __init__(self, tokenizer, filename, max_length=DEFAULT_MAX_LENGTH):
+    def __init__(self, tokenizer, filename, padding=False, max_length=DEFAULT_MAX_LENGTH):
         if isinstance(tokenizer, str):
             tokenizer = load_tokenizer(tokenizer)
+        start = time.time()
+        blocks = tokenize_file(tokenizer, filename=filename, N=-1, jsonl_key='text',
+            block_size=max_length, padding=padding, overlap=0, sep=DEFAULT_SEP
+        )
         self.chunks = []
         token_counts = []
-        jsonl_text='text'
-        if not filename.endswith('.jsonl') or not filename.endswith('.jsonl.gz'):
-            jsonl_text=None # jsonl でない
-        start = time.time()
-        with zopen(filename) as f:
-            line = f.readline()
-            while line:
-                line = _read_text_from_line(line, key=jsonl_text, sep='<sep>')
-                ids = tokenizer.encode(line, truncation=True, max_length=max_length)
-                self.chunks.append(np.array(ids, dtype=np.int32))
-                token_counts.append(len(ids))
-                line = f.readline()
+        for b in blocks:
+                self.chunks.append(np.array(b, dtype=np.int32))
+                token_counts.append(len(b))
         end = time.time()
         stat = stat_tokens(token_counts)
-        verbose_print(f'Loaded {filename} {(end-start):.3f}s:', stat)
         self.n_tokens = stat['total']
+        verbose_print(f'Loaded: {filename} Tokens: {self.n_tokens} {(end-start):.3f}s:', stat)
 
     def __len__(self):
         return len(self.chunks)
@@ -677,8 +633,10 @@ class DataComposer(Dataset):
                  cache_dir = DEFAULT_CACHE_DIR, use_filelock=True, prefetch=1):
         if block_size is None:
             self.max_length = max_length
+            self.padding=True
         else:
             self.max_length = min(max_length, block_size)
+            self.padding=False
         self.version = safe_version(version)
         self.cache_dir = f'{safe_dir(cache_dir)}/{random_name()}'
         os.makedirs(self.cache_dir, exist_ok=True)
@@ -695,8 +653,9 @@ class DataComposer(Dataset):
             url, version, start, end = _parse_split(url, self.version)
             if url.endswith('.gz') or url.endswith('.jsonl') or url.endswith('.txt'):
                 if tokenizer is None:
-                    raise ValueError('tokenizer must be specified.')
-                dataset = FileDataset(tokenizer, url)
+                    verbose_print(f'トークンナイザーの指定がないので DEFAULT_TOKENIZER={DEFAULT_TOKENIZER}を使います')
+                    tokenizer = load_tokenizer(DEFAULT_TOKENIZER)
+                dataset = FileDataset(tokenizer, url, max_length=self.max_length, padding=self.padding)
             else:
                 dataset = ChunkedDataset(url, version=version, block_size=block_size, 
                                          lock_file=self.lock_file, prefetch=self.prefetch,
@@ -734,14 +693,12 @@ class DataComposer(Dataset):
 
 ## Seq2Seq
 
-EXTRA_IDS = [f'<extra_id_{i}>' for i in range(100)]
-
 class MSP(object):
     def __init__(self, tokenizer, lambda_=3):
         self.lambda_ = lambda_
-        self.extra_ids = tokenizer.convert_tokens_to_ids(EXTRA_IDS)
         self.eos_token_id = tokenizer.eos_token_id
-        self.newline_id = tokenizer.convert_tokens_to_ids(['<nL>'])[0]
+        self.extra_ids = find_extra_ids(tokenizer)
+        self.newline_id = find_newline_token_id(tokenizer)
 
     def __call__(self, data, max_length):
         data = data.tolist()
@@ -770,17 +727,18 @@ class MSP(object):
 class DP(object):
     def __init__(self, tokenizer, lambda_=20):
         self.lambda_ = lambda_
-        self.extra_ids = tokenizer.convert_tokens_to_ids(EXTRA_IDS)
         self.eos_token_id = tokenizer.eos_token_id
-        self.newline_id = tokenizer.convert_tokens_to_ids(['<nL>'])[0]
-        #print(self.newline_id, self.extra_ids)
+        self.extra_ids = find_extra_ids(tokenizer)
+        self.newline_id = find_newline_token_id(tokenizer)
+        #print('@', self.newline_id, self.extra_ids)
 
     def __call__(self, data, max_length):
         index = 0
         start = 0
+        size = min(max_length, len(data))
         for length in np.random.poisson(self.lambda_, 1000):
             start = start + max(1, length)
-            if start >= max_length:
+            if start >= size:
                 break
             if data[start] != self.eos_token_id or data[start] != self.newline_id:
                 data[start] = self.extra_ids[index]
