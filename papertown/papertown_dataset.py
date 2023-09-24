@@ -412,6 +412,7 @@ def resolve_file(url_base, file_path, cache_dir, sync=True):
     # ディレクトリを作っておく
     os.makedirs(cache_file.rpartition("/")[0], exist_ok=True)
     cache_file_size = get_file_size(cache_file)
+    #print('@', cache_file_size, cache_file)
     if cache_file_size > 0:
         return cache_file
 
@@ -420,7 +421,7 @@ def resolve_file(url_base, file_path, cache_dir, sync=True):
         remote_file = os.path.abspath(remote_file[5:]) # file: をとる
         cmd = f'cp {remote_file} {cache_file}'
     else:
-        cmd = f"wget -qO {cache_file} {remote_file}"
+        cmd = f"wget -qO {cache_file}.tmp {remote_file} && mv {cache_file}.tmp {cache_file}"
 
     if sync:
         if cache_file_size == 0:
@@ -434,9 +435,10 @@ def resolve_file(url_base, file_path, cache_dir, sync=True):
 
     if get_file_size(cache_file) == -1:
         touch(cache_file)
+        verbose_print('プレフェッチ', remote_file)
         subprocess.call(f"{cmd} &", shell=True)
-    else:
-        verbose_print('既にダウンロード中..', remote_file)
+    # else:
+    #     verbose_print('既にダウンロード中..', remote_file)
     return None
 
 
@@ -454,6 +456,11 @@ def _FileLock(lockfile: str):
     return _DummyFileLock() if lockfile is None else FileLock(lockfile)
 
 
+import hashlib
+
+def url_to_hash(url):
+    return hashlib.md5(url.encode()).hexdigest()
+
 class ChunkedDataset(Dataset):
     def __init__(self, url, version, block_size=None, lock_file=None, cache_dir=".", prefetch=3, **kwargs):
         """
@@ -461,7 +468,7 @@ class ChunkedDataset(Dataset):
         """
         self.url = safe_dir(url)
         self.version = version
-        self.cache_dir = f'{safe_dir(cache_dir)}/{random_name()}'
+        self.cache_dir = f'{safe_dir(cache_dir)}/{url_to_hash(url)}'
         self.lock_file = lock_file
         self.config = self.load_config(kwargs)
         self.file_ext = self.config.get("file_ext", "npz")
@@ -474,22 +481,21 @@ class ChunkedDataset(Dataset):
             self.block_size = block_size
             self.block_split = self.config['block_size'] // block_size
         #print('DEBUG: block_split', self.block_split, block_size, self.config.get('block_size', -1))
-        self.prefetch=prefetch
         self.queue = deque(maxlen=64)
         self.cache = {}
+        self.prefetch=prefetch
+        self.max_chunkseq = self.config.get("chunkseq", 1)
+        if self.prefetch > 0 and self.n_items > 0:
+            self.try_prefetch(0)
 
     def load_config(self, kwargs: dict):
         with _FileLock(self.lock_file):
-#            os.makedirs(self.cache_dir, exist_ok=True)
             config_file = resolve_file(self.url, f'{self.version}config.json', self.cache_dir)
-            # config_file = f"{self.cache_dir}/{self.version}config.json"
-            # if self.url and not os.path.exists(config_file):
-            #     download(self.url, self.cache_dir, config_file)
         try:
             with open(config_file) as f:
                 config = json.load(f)
         except BaseException as e:
-            verbose_print(f'Unable to read {self.url} ({config_file})')
+            verbose_print(f'読み込みに失敗しました {self.url} ({config_file})')
             config = dict(n_items=0, n_tokens=0)
         config.update(kwargs)
         return config
@@ -501,31 +507,29 @@ class ChunkedDataset(Dataset):
         if filepath in self.cache:
             return self.cache[filepath]
         with _FileLock(self.lock_file):
-            filepath = resolve_file(self.url, filepath, self.cache_dir)
-            chunks = load_chunk_npz(filepath)
+            filepath2 = resolve_file(self.url, filepath, self.cache_dir)
+            chunks = load_chunk_npz(filepath2)
             random.shuffle(chunks)
         if len(self.queue) == 64:
             older = self.queue.popleft()
             if older in self.cache:
                 del self.cache[older]
-            # try:
-            #     os.remove(f'{self.cache_dir}/{older}')
-            # except FileNotFoundError:
-            #     pass
         self.queue.append(filepath)
         self.cache[filepath] = chunks
         return chunks
 
-    def __getitem__(self, i):
-        offset = i % self.block_split
-        i = i // self.block_split
+    def try_prefetch(self, chunkseq):
+        filepath = chunkseq_to_filepath(chunkseq % self.max_chunkseq, self.version, 'npz')
+        resolve_file(self.url, filepath, self.cache_dir, sync=False)
+
+    def __getitem__(self, index):
+        offset = index % self.block_split
+        i = index // self.block_split
         chunkseq = i // self.n_chunks
         filepath = chunkseq_to_filepath(chunkseq, self.version, 'npz')
         chunks = self.get_chunks(filepath)
-        if self.prefetch > 0 and i % self.n_chunks == 0:
-            prefetch_chunkseq = ((i+(self.n_chunks*self.prefetch)) % self.n_items) // self.n_chunks
-            prefetch_filepath = chunkseq_to_filepath(prefetch_chunkseq, self.version, 'npz')
-            resolve_file(self.url, prefetch_filepath, self.cache_dir, sync=False)
+        if self.prefetch > 0 and index % self.n_chunks == 0:
+            self.try_prefetch(chunkseq+self.prefetch)
         chunk = chunks[i % self.n_chunks]
         if self.block_split > 1:
             return chunk[offset*self.block_size:(offset+1)*self.block_size]
@@ -660,8 +664,8 @@ def parse_url_list(url_list=[]):
 class DataComposer(Dataset):
     def __init__(self, url_list, version = DEFAULT_VERSION, 
                  max_length=DEFAULT_MAX_LENGTH, block_size=None,
-                 build_fn=build_inputs_for_clm, tokenizer=None, 
-                 cache_dir = DEFAULT_CACHE_DIR, use_filelock=True):
+                 build_fn=build_inputs_for_clm, tokenizer=None, shuffle=True,
+                 cache_dir = DEFAULT_CACHE_DIR, use_filelock=True, prefetch=1):
         if block_size is None:
             self.max_length = max_length
         else:
@@ -670,6 +674,7 @@ class DataComposer(Dataset):
         self.cache_dir = f'{safe_dir(cache_dir)}/{random_name()}'
         os.makedirs(self.cache_dir, exist_ok=True)
         self.lock_file = f'{self.cache_dir}/lock' if use_filelock else None
+        self.prefetch = prefetch
         self.build_fn = build_fn
         self._prepare_datasets(parse_url_list(url_list), tokenizer, block_size)
 
@@ -685,17 +690,20 @@ class DataComposer(Dataset):
                 dataset = FileDataset(tokenizer, url)
             else:
                 dataset = ChunkedDataset(url, version=version, block_size=block_size, 
-                                         lock_file=self.lock_file, 
-                                         cache_dir=f'{self.cache_dir}/{i}')
+                                         lock_file=self.lock_file, prefetch=self.prefetch,
+                                         cache_dir=self.cache_dir)
+            if len(dataset) == 0:
+                verbose_print(f'{url} は、無視して学習を続けます。')
+                continue
             start, end = _parse_range(start, end, len(dataset))
             start, end = dataset.compact(start, end)
             ds = Indexer(dataset, start, end-start)
             self.n_items += len(ds)
-            verbose_print(url, f'tokens: {ds.get_num_of_tokens():,}')
+            verbose_print(f'{url} トークン数: {ds.get_num_of_tokens():,}')
             self.n_tokens += ds.get_num_of_tokens()
             datasets.append(ds)
-        self.mixer = _make_mixer(datasets)
         verbose_print(f'Total tokens: {self.n_tokens:,}')
+        self.mixer = _make_mixer(datasets)
 
     def __enter__(self):
         return self
