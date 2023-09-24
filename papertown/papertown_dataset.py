@@ -370,6 +370,7 @@ def download(url, dir, local_file, sync=True):
     else:
         subprocess.call(f"{cmd} &", shell=True)
 
+
 # ChunkedDataset
 
 class _DummyFileLock:
@@ -453,11 +454,11 @@ class ChunkedDataset(Dataset):
         chunkseq = i // self.n_chunks
         filepath = chunk_filename(self.cache_dir, chunkseq, self.version, 'npz')
         chunks = self.get_chunks(filepath)
-        if self.prefetch > 0 and i % self.n_chunks == 0:
-            ni = (i+(self.n_chunks*self.prefetch)) % self.n_items
-            nchunkseq = ni // self.n_chunks
-            filepath = chunk_filename(self.cache_dir, nchunkseq, self.version, 'npz')
-            download(self.url, self.cache_dir, filepath, sync=False)
+        # if self.prefetch > 0 and i % self.n_chunks == 0:
+        #     ni = (i+(self.n_chunks*self.prefetch)) % self.n_items
+        #     nchunkseq = ni // self.n_chunks
+        #     filepath = chunk_filename(self.cache_dir, nchunkseq, self.version, 'npz')
+        #     download(self.url, self.cache_dir, filepath, sync=False)
         chunk = chunks[i % self.n_chunks]
         if self.block_split > 1:
             return chunk[offset*self.block_size:(offset+1)*self.block_size]
