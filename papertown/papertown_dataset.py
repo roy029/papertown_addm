@@ -244,10 +244,10 @@ def tokenize_file(tokenizer, filename, update_fn=None,
                 update_fn(blocks)
                 blocks=[]
             line = f.readline()
-            c+=1
             if N: 
                 pbar.update()
                 if c > N: break
+            c+=1
     if N:
         pbar.close()
     return blocks

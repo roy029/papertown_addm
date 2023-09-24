@@ -6,7 +6,7 @@ import hashlib
 
 import torch
 from transformers import AutoTokenizer
-from .papertown_utils import verbose_print
+from .papertown_utils import *
 
 DEFAULT_NL = os.environ.get('PT_NK', '<nL>')
 DEFAULT_SEP = os.environ.get('PT_SEP', '<seP>')
@@ -104,7 +104,7 @@ def get_tokenizer_info(tokenizer: AutoTokenizer):
         vocab_size=tokenizer.vocab_size)
 
 
-def load_tokenizer(tokenizer_path="kkuramitsu/spm-pt32k", adapt=True):
+def load_tokenizer(tokenizer_path=DEFAULT_TOKENIZER, adapt=True):
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, legacy=False, trust_remote_code=True, use_fast=False)
     if adapt:
         adapt_tokenizer(tokenizer)
