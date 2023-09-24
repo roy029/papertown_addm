@@ -27,6 +27,7 @@ setup(
     entry_points={
         "console_scripts": [
             "papertown_store=papertown.papertown_store:main_store",
+            "papertown_testdata=papertown.papertown_store:main_testdata",
         ]
     },
     classifiers=[
