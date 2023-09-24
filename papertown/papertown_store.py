@@ -47,7 +47,7 @@ def main_testdata():
         for index in tqdm(range(hparams.N), total=hparams.N):
             dc[index]
         end = time.time()
-        print(f'Total: {end-start:.1f}s Iterations: {hparams.N:,} {hparams.N / {end-start}}[it/s]')
+        print(f'Total: {end-start:.1f}s Iterations: {hparams.N:,} {hparams.N/(end-start)}[it/s]')
 
 
 
