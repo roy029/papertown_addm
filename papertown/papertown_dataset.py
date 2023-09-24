@@ -61,6 +61,10 @@ def _remove_heading_nL(s):
         s = s[4:]
     return s
 
+def chunkseq_to_filepath(chunkseq:int, prefix:str, file_ext:str):
+    dir = f"{(chunkseq//100):04d}"
+    return f"{dir}/{prefix}{(chunkseq%100):02d}.{file_ext}"
+
 
 def chunk_filename(dir:str, chunkseq:int, prefix:str, file_ext:str, mkdir=True):
     dir = f"{dir}/{(chunkseq//100):04d}"
@@ -370,6 +374,69 @@ def download(url, dir, local_file, sync=True):
     else:
         subprocess.call(f"{cmd} &", shell=True)
 
+from pathlib import Path
+
+def get_file_size(file_path):
+    if os.path.exists(file_path) and os.path.isfile(file_path):
+        return os.path.getsize(file_path)
+    else:
+        return -1
+
+def touch(file_path):
+    file = Path(file_path)
+    file.touch(exist_ok=True)
+
+import os
+import time
+
+def wait_for_file(file_path, timeout=60):
+    """
+    指定されたファイルが存在するかを定期的にチェックし、
+    タイムアウトまでにファイルが見つかった場合は True を返します。
+    タイムアウトした場合は False を返します。
+    """
+    end_time = time.time() + timeout
+    while time.time() < end_time:
+        if get_file_size(file_path) > 0:
+            return True  # ファイルが見つかった
+        time.sleep(1)  # 1秒待つ
+    return False  # タイムアウト
+
+
+def resolve_file_path(url_base, file_path, cache_dir, sync=True):
+    remote_file = safe_join(url_base, file_path)
+    if remote_file.startswith('/'):
+        # ローカルなファイルパスの場合
+        return remote_file
+    cache_file = safe_join(cache_dir, file_path)
+    # ディレクトリを作っておく
+    os.makedirs(cache_file.rpartition("/")[0], exist_ok=True)
+    cache_file_size = get_file_size(cache_file)
+    if cache_file_size > 0:
+        return cache_file
+
+    # ダウンロードコマンド
+    if remote_file.startswith('file:'):
+        remote_file = os.path.abspath(remote_file[5:]) # file: をとる
+        cmd = f'cp {remote_file} {local_file}'
+    else:
+        cmd = f"wget -qO {local_file} {remote_file}"
+
+    if sync:
+        if cache_file_size == 0:
+            verbose_print('Already downloading..', remote_file)
+            if wait_for_file(cache_file, 30):
+                return cache_file
+        touch(cache_file)
+        subprocess.call(cmd, shell=True)
+        verbose_print(f'Downloaded {get_file_size(cache_file):,} bytes:', cmd)
+        return cache_file
+
+    if get_file_size(cache_file) == -1:
+        touch(cache_file)
+        subprocess.call(f"{cmd} &", shell=True)
+    return None
+
 
 # ChunkedDataset
 
@@ -411,15 +478,16 @@ class ChunkedDataset(Dataset):
 
     def load_config(self, kwargs: dict):
         with _FileLock(self.lock_file):
-            os.makedirs(self.cache_dir, exist_ok=True)
-            config_file = f"{self.cache_dir}/{self.version}config.json"
-            if self.url and not os.path.exists(config_file):
-                download(self.url, self.cache_dir, config_file)
+#            os.makedirs(self.cache_dir, exist_ok=True)
+            config_file = resolve_file(self.url, f'{self.version}config.json', self.cache_dir)
+            # config_file = f"{self.cache_dir}/{self.version}config.json"
+            # if self.url and not os.path.exists(config_file):
+            #     download(self.url, self.cache_dir, config_file)
         try:
             with open(config_file) as f:
                 config = json.load(f)
         except BaseException as e:
-            verbose_print(f'Unable to read url={self.url}')
+            verbose_print(f'Unable to read {self.url} ({config_file})')
             config = dict(n_items=0, n_tokens=0)
         config.update(kwargs)
         return config
@@ -431,19 +499,17 @@ class ChunkedDataset(Dataset):
         if filepath in self.cache:
             return self.cache[filepath]
         with _FileLock(self.lock_file):
-            if not os.path.exists(filepath):
-                download(self.url, self.cache_dir, filepath)
-        with _FileLock(self.lock_file):
+            filepath = resolve_file_path(self.url, filepath, self.cache_dir)
             chunks = load_chunk_npz(filepath)
             random.shuffle(chunks)
         if len(self.queue) == 64:
             older = self.queue.popleft()
             if older in self.cache:
                 del self.cache[older]
-            try:
-                os.remove(f'{self.cache_dir}/{older}')
-            except FileNotFoundError:
-                pass
+            # try:
+            #     os.remove(f'{self.cache_dir}/{older}')
+            # except FileNotFoundError:
+            #     pass
         self.queue.append(filepath)
         self.cache[filepath] = chunks
         return chunks
@@ -452,13 +518,12 @@ class ChunkedDataset(Dataset):
         offset = i % self.block_split
         i = i // self.block_split
         chunkseq = i // self.n_chunks
-        filepath = chunk_filename(self.cache_dir, chunkseq, self.version, 'npz')
+        filepath = chunkseq_to_file(chunkseq, self.version, 'npz')
         chunks = self.get_chunks(filepath)
-        # if self.prefetch > 0 and i % self.n_chunks == 0:
-        #     ni = (i+(self.n_chunks*self.prefetch)) % self.n_items
-        #     nchunkseq = ni // self.n_chunks
-        #     filepath = chunk_filename(self.cache_dir, nchunkseq, self.version, 'npz')
-        #     download(self.url, self.cache_dir, filepath, sync=False)
+        if self.prefetch > 0 and i % self.n_chunks == 0:
+            prefetch_chunkseq = ((i+(self.n_chunks*self.prefetch)) % self.n_items) // self.n_chunks
+            prefetch_filepath = chunkseq_to_file(nchunkseq, self.version, 'npz')
+            resolve_file_path(self.url, prefetch_filepath, self.cache_dir, sync=False)
         chunk = chunks[i % self.n_chunks]
         if self.block_split > 1:
             return chunk[offset*self.block_size:(offset+1)*self.block_size]
