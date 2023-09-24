@@ -38,7 +38,7 @@ def format_large_number(num: int)->str:
 
 def print_gpu_utilization():
     try:
-        from pynvml import *
+        from pynvml import nvmlInit,nvmlDeviceGetHandleByIndex,nvmlDeviceGetMemoryInfo
         nvmlInit()
         handle = nvmlDeviceGetHandleByIndex(0)
         info = nvmlDeviceGetMemoryInfo(handle)

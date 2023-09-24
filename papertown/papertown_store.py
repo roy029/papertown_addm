@@ -26,21 +26,18 @@ def main_store():
     store.upload(filename=hparams.files[0], N=hparams.N)
 
 
-def load_url_list(filename):
-    with open(filename) as f:
-        return [url for url in f.readlines() if not url.startswith('#')]
 
-def setup_download():
+def setup_testdata():
     parser = argparse.ArgumentParser(description="papertown_testdata")
-    parser.add_argument("--url_list", type=load_url_list)
+    parser.add_argument("--url_list", type=str)
     parser.add_argument("--block_size", type=int, default=1024)
     parser.add_argument("--N", type=int, default=0)
     hparams = parser.parse_args()  # hparams になる
     return hparams
 
-def main_download():
-    hparams = setup_download()
-    with DataComposer(urls=hparams.url_list, block_size=hparams.block_size) as dc:
+def main_testdata():
+    hparams = setup_testdata()
+    with DataComposer(url_list=hparams.url_list, block_size=hparams.block_size) as dc:
         print(len(dc))
         if hparams.N == 0:
             return
