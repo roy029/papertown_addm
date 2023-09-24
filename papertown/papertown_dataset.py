@@ -520,11 +520,11 @@ class ChunkedDataset(Dataset):
         offset = i % self.block_split
         i = i // self.block_split
         chunkseq = i // self.n_chunks
-        filepath = chunkseq_to_file(chunkseq, self.version, 'npz')
+        filepath = chunkseq_to_filepath(chunkseq, self.version, 'npz')
         chunks = self.get_chunks(filepath)
         if self.prefetch > 0 and i % self.n_chunks == 0:
             prefetch_chunkseq = ((i+(self.n_chunks*self.prefetch)) % self.n_items) // self.n_chunks
-            prefetch_filepath = chunkseq_to_file(nchunkseq, self.version, 'npz')
+            prefetch_filepath = chunkseq_to_filepath(prefetch_chunkseq, self.version, 'npz')
             resolve_file(self.url, prefetch_filepath, self.cache_dir, sync=False)
         chunk = chunks[i % self.n_chunks]
         if self.block_split > 1:
