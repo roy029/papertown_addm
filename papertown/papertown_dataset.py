@@ -403,7 +403,7 @@ def wait_for_file(file_path, timeout=60):
     return False  # タイムアウト
 
 
-def resolve_file_path(url_base, file_path, cache_dir, sync=True):
+def resolve_file(url_base, file_path, cache_dir, sync=True):
     remote_file = safe_join(url_base, file_path)
     if remote_file.startswith('/'):
         # ローカルなファイルパスの場合
@@ -499,7 +499,7 @@ class ChunkedDataset(Dataset):
         if filepath in self.cache:
             return self.cache[filepath]
         with _FileLock(self.lock_file):
-            filepath = resolve_file_path(self.url, filepath, self.cache_dir)
+            filepath = resolve_file(self.url, filepath, self.cache_dir)
             chunks = load_chunk_npz(filepath)
             random.shuffle(chunks)
         if len(self.queue) == 64:
@@ -523,7 +523,7 @@ class ChunkedDataset(Dataset):
         if self.prefetch > 0 and i % self.n_chunks == 0:
             prefetch_chunkseq = ((i+(self.n_chunks*self.prefetch)) % self.n_items) // self.n_chunks
             prefetch_filepath = chunkseq_to_file(nchunkseq, self.version, 'npz')
-            resolve_file_path(self.url, prefetch_filepath, self.cache_dir, sync=False)
+            resolve_file(self.url, prefetch_filepath, self.cache_dir, sync=False)
         chunk = chunks[i % self.n_chunks]
         if self.block_split > 1:
             return chunk[offset*self.block_size:(offset+1)*self.block_size]
