@@ -581,8 +581,16 @@ def _make_mixer(datasets: List[Indexer]):
 def build_inputs_for_clm(data, max_length):
     return torch.tensor(data[:max_length].astype(np.int64), dtype=torch.long)
 
+def parse_url_list(url_list=[]):
+    if isinstance(url_list, str):
+        if os.path.exists(url_list):
+            with open(url_list) as f:
+                return [url for url in f.readlines() if url.strip() != '' and not url.startswith('#')]
+        return url_list.split('|')
+    return url_list
+
 class DataComposer(Dataset):
-    def __init__(self, urls=[], version = DEFAULT_VERSION, 
+    def __init__(self, url_list, version = DEFAULT_VERSION, 
                  max_length=DEFAULT_MAX_LENGTH, block_size=None,
                  build_fn=build_inputs_for_clm, tokenizer=None, 
                  cache_dir = DEFAULT_CACHE_DIR, use_filelock=True):
@@ -595,11 +603,9 @@ class DataComposer(Dataset):
         os.makedirs(self.cache_dir, exist_ok=True)
         self.lock_file = f'{self.cache_dir}/lock' if use_filelock else None
         self.build_fn = build_fn
-        self._prepare_datasets(urls, tokenizer, block_size)
+        self._prepare_datasets(parse_url_list(url_list), tokenizer, block_size)
 
     def _prepare_datasets(self, urls, tokenizer, block_size):
-        if isinstance(urls, str):
-            urls = urls.split('|')
         self.n_items = 0
         self.n_tokens = 0
         datasets = []
@@ -617,7 +623,7 @@ class DataComposer(Dataset):
             start, end = dataset.compact(start, end)
             ds = Indexer(dataset, start, end-start)
             self.n_items += len(ds)
-            verbose_print(url, f'tokens={ds.get_num_of_tokens():,}')
+            verbose_print(url, f'tokens: {ds.get_num_of_tokens():,}')
             self.n_tokens += ds.get_num_of_tokens()
             datasets.append(ds)
         self.mixer = _make_mixer(datasets)
