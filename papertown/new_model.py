@@ -36,6 +36,30 @@ def format_large_number(num: int)->str:
     else:
         return f"{num / 1_000_000_000_000_000_000:.1f}Exa"
 
+def print_model(model):
+    n_parameters=count_parameters(model)
+    config = model.config
+    print(f'Parameters: {format_large_number(n_parameters)} {n_parameters}', end=' ')
+    if hasattr(config, 'max_position_embeddings'):
+        print(f"max_length: {config.max_position_embeddings}", end=' ')
+        print(f"vocab_size: {config.vocab_size}")
+    elif hasattr(config, "n_positions"):
+        print(f"max_length: {model.config.n_positions}", end=' ')
+        print(f"vocab_size: {config.vocab_size}")
+
+    if hasattr(config, 'hidden_size'):
+        print(f"n_dims: {model.config.hidden_size//model.config.num_attention_heads}", end=' ')
+        print(f"n_heads: {model.config.num_attention_heads}", end=' ')
+        print(f"hidden_size: {model.config.hidden_size}", end=' ')
+        print(f"intermediate_size: {model.config.intermediate_size}", end=' ')
+        print(f"n_layers: {model.config.num_hidden_layers}")
+    elif hasattr(config, 'n_embd'):
+        print(f"n_embed: {model.config.n_embd}", end=' ')
+        print(f"n_heads: {model.config.n_head}", end=' ')
+        print(f"n_layers: {model.config.n_layer}")
+    else:
+        print(config)
+
 def print_gpu_utilization():
     try:
         from pynvml import nvmlInit,nvmlDeviceGetHandleByIndex,nvmlDeviceGetMemoryInfo
@@ -123,7 +147,6 @@ def new_GPT2(max_length=2048, n_dims=512, n_heads=24, n_layers=24, tokenizer='kk
         vocab_size = len(tokenizer),
         bos_token_id = tokenizer.eos_token_id,
         eos_token_id = tokenizer.eos_token_id,
-        eos_token_id = tokenizer.eos_token_id,
         pad_token_id = tokenizer.pad_token_id,
         n_positions=max_length,
         n_ctx=max_length,
@@ -133,16 +156,8 @@ def new_GPT2(max_length=2048, n_dims=512, n_heads=24, n_layers=24, tokenizer='kk
     )
 
     model = GPT2LMHeadModel(config)
-    def print_model(model):
-        n_parameters=count_parameters(model)
-        print(f"max_length: {model.config.n_positions}", end=' ')
-        print(f'parameters: {n_parameters//1_000_000}M', n_parameters, end=' ')
-        print(f"vocab_size: {model.config.vocab_size}")
-        print(f"n_embed: {model.config.n_embd}", end=' ')
-        print(f"n_heads: {model.config.n_head}", end=' ')
-        print(f"n_layers: {model.config.n_layer}")
     print_model(model)
-    return model, print_model
+    return model
 
 # GPTNeoX
 
@@ -164,18 +179,8 @@ def new_GPTNeoX(max_length=2048, n_dims=512, n_heads=8, n_layers=24, intermediat
     )
 
     model = GPTNeoXForCausalLM(config)
-    def print_model(model):
-        n_parameters=count_parameters(model)
-        print(f'Parameters: {format_large_number(n_parameters)} {n_parameters}', end=' ')
-        print(f"max_length: {model.config.max_position_embeddings}", end=' ')
-        print(f"vocab_size: {model.config.vocab_size}")
-        print(f"n_dims: {model.config.hidden_size//model.config.num_attention_heads}", end=' ')
-        print(f"n_heads: {model.config.num_attention_heads}", end=' ')
-        print(f"intermediate_size: {model.config.intermediate_size}", end=' ')
-        print(f"n_layers: {model.config.num_hidden_layers}")
-
     print_model(model)
-    return model, tokenizer
+    return model
 
 
 ## new_Lamma2
@@ -199,18 +204,8 @@ def new_Llama2(max_length=2048, n_dims=512, n_heads=8, n_layers=28, intermediate
     )
 
     model = LlamaForCausalLM(config)
-    def print_model(model):
-        n_parameters=count_parameters(model)
-        print(f'Parameters: {format_large_number(n_parameters)} {n_parameters}', end=' ')
-        print(f"max_length: {model.config.max_position_embeddings}", end=' ')
-        print(f"vocab_size: {model.config.vocab_size}")
-        print(f"n_dims: {model.config.hidden_size//model.config.num_attention_heads}", end=' ')
-        print(f"n_heads: {model.config.num_attention_heads}", end=' ')
-        print(f"intermediate_size: {model.config.intermediate_size}", end=' ')
-        print(f"n_layers: {model.config.num_hidden_layers}")
-
     print_model(model)
-    return model, print_model
+    return model
 
 
 

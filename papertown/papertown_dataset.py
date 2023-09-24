@@ -358,21 +358,21 @@ def safe_join(dir, file):
         file = file[1:]
     return f'{dir}/{file}'
 
-def download(url, dir, local_file, sync=True):
-    file=local_file[len(dir)+1:]
-    remote_file = safe_join(url, file)
-    local_dir, _, _ = local_file.rpartition("/")
-    os.makedirs(local_dir, exist_ok=True)
-    if remote_file.startswith('file:'):
-        remote_file = os.path.abspath(remote_file[5:]) # file: をとる
-        cmd = f'cp {remote_file} {local_file}'
-    else:
-        cmd = f"wget -qO {local_file} {remote_file}"
-    if sync:
-        verbose_print('Downloading..', cmd)
-        subprocess.call(cmd, shell=True)
-    else:
-        subprocess.call(f"{cmd} &", shell=True)
+# def download(url, dir, local_file, sync=True):
+#     file=local_file[len(dir)+1:]
+#     remote_file = safe_join(url, file)
+#     local_dir, _, _ = local_file.rpartition("/")
+#     os.makedirs(local_dir, exist_ok=True)
+#     if remote_file.startswith('file:'):
+#         remote_file = os.path.abspath(remote_file[5:]) # file: をとる
+#         cmd = f'cp {remote_file} {local_file}'
+#     else:
+#         cmd = f"wget -qO {local_file} {remote_file}"
+#     if sync:
+#         verbose_print('Downloading..', cmd)
+#         subprocess.call(cmd, shell=True)
+#     else:
+#         subprocess.call(f"{cmd} &", stderr=subprocess.DEVNULL, shell=True)
 
 from pathlib import Path
 
@@ -395,9 +395,11 @@ def wait_for_file(file_path, timeout=60):
     タイムアウトまでにファイルが見つかった場合は True を返します。
     タイムアウトした場合は False を返します。
     """
-    end_time = time.time() + timeout
+    start_time = time.time()
+    end_time = start_time + timeout
     while time.time() < end_time:
         if get_file_size(file_path) > 0:
+            verbose_print(f'{time.time()-start_time} 秒, 待ちました')
             return True  # ファイルが見つかった
         time.sleep(1)  # 1秒待つ
     return False  # タイムアウト
@@ -436,7 +438,7 @@ def resolve_file(url_base, file_path, cache_dir, sync=True):
     if get_file_size(cache_file) == -1:
         touch(cache_file)
         verbose_print('プレフェッチ', remote_file)
-        subprocess.call(f"{cmd} &", shell=True)
+        subprocess.call(f"{cmd} &", shell=True, stderr=subprocess.DEVNULL)
     # else:
     #     verbose_print('既にダウンロード中..', remote_file)
     return None
@@ -506,10 +508,17 @@ class ChunkedDataset(Dataset):
     def get_chunks(self, filepath):
         if filepath in self.cache:
             return self.cache[filepath]
-        with _FileLock(self.lock_file):
-            filepath2 = resolve_file(self.url, filepath, self.cache_dir)
-            chunks = load_chunk_npz(filepath2)
-            random.shuffle(chunks)
+        try:
+            with _FileLock(self.lock_file):
+                filepath2 = resolve_file(self.url, filepath, self.cache_dir)
+                chunks = load_chunk_npz(filepath2)
+                random.shuffle(chunks)
+        except BaseException as e:
+            verbose_print(f'{filepath2} has an error: {e}')
+            if len(self.queue) == 0:
+                raise e
+            # エラーで落ちくらいなら、キャッシュのデータで学習を続ける
+            chunks = self.cache[self.queue[0]]
         if len(self.queue) == 64:
             older = self.queue.popleft()
             if older in self.cache:
@@ -759,18 +768,19 @@ class MSP(object):
         }
 
 class DP(object):
-    def __init__(self, tokenizer, lambda_=5):
+    def __init__(self, tokenizer, lambda_=20):
         self.lambda_ = lambda_
         self.extra_ids = tokenizer.convert_tokens_to_ids(EXTRA_IDS)
         self.eos_token_id = tokenizer.eos_token_id
         self.newline_id = tokenizer.convert_tokens_to_ids(['<nL>'])[0]
+        #print(self.newline_id, self.extra_ids)
 
     def __call__(self, data, max_length):
         index = 0
         start = 0
         for length in np.random.poisson(self.lambda_, 1000):
             start = start + max(1, length)
-            if start > max_length:
+            if start >= max_length:
                 break
             if data[start] != self.eos_token_id or data[start] != self.newline_id:
                 data[start] = self.extra_ids[index]
@@ -796,8 +806,7 @@ class Seq2seq(object):
             "labels": torch.tensor(labels.astype(np.int64), dtype=torch.long),
         }
 
-
-
+"""
 def build_inputs_for_seq2seq(data, max_length=None, target_max_length=None):
     target_max_length = target_max_length or max_length
     eos_id = data[-1]
@@ -830,3 +839,4 @@ def build_inputs_for_seq2seq(data, max_length=None, target_max_length=None):
         # "attention_mask": torch.tensor(inputs, dtype=torch.long),
         "labels": torch.tensor(labels.astype(np.int64), dtype=torch.long),
     }
+"""
