@@ -585,7 +585,7 @@ def parse_url_list(url_list=[]):
     if isinstance(url_list, str):
         if os.path.exists(url_list):
             with open(url_list) as f:
-                return [url for url in f.readlines() if url.strip() != '' and not url.startswith('#')]
+                return [url.strip() for url in f.readlines() if url.strip() != '' and not url.startswith('#')]
         return url_list.split('|')
     return url_list
 
