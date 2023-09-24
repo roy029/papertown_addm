@@ -44,7 +44,7 @@ def main_testdata():
         if hparams.N == -1:
             hparams.N = len(dc)
         start = time.time()
-        ds = iter(ds)
+        ds = iter(dc)
         for index in tqdm(range(hparams.N), total=hparams.N):
             ds[index]
         end = time.time()
