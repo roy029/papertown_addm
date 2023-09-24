@@ -1,32 +1,11 @@
-import os
-import time
-import random
-
-import json
-import shutil
-import subprocess
 from typing import List
 
 import re
-from collections import deque
-
-from filelock import FileLock
-import numpy as np
 import hashlib
 
 import torch
 from transformers import AutoTokenizer
-from torch.utils.data import Dataset
-
-def verbose_print(*args, **kwargs):
-    print('📃', *args, **kwargs)
-
-class SpecialTokenIds():
-    PAD = 0
-    EOS = 1
-    UNK = 2
-    SEP = 11
-    MASK = 12
+from .papertown_utils import verbose_print
 
 def _upper_repl(matchobj):
     #print(matchobj, matchobj.group(0))
@@ -104,7 +83,8 @@ def adapt_tokenizer(tokenizer: AutoTokenizer):
         return post_decode(s)
     tokenizer.decode = new_decode
 
-def load_tokenizer(tokenizer_path="kkuramitsu/spm-pt16k", adapt=True):
+
+def load_tokenizer(tokenizer_path="kkuramitsu/spm-pt32k", adapt=True):
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, legacy=False, trust_remote_code=True, use_fast=False)
     if adapt:
         adapt_tokenizer(tokenizer)

@@ -138,16 +138,87 @@ def tokenize_block(tokenizer, text, fill=None, block_size=256, by_line=False, ov
     fill = _tokenize_block_simply(blocks, tokens, fill, block_size, overlap=overlap)
     return blocks, fill
 
-# def tokenize_text(tokenizer, text, max_length=DEFAULT_MAX_LENGTH):
-#     return tokenizer.encode(text, truncation=True, max_length=max_length)
 
-# def tokenize_pair(tokenizer, text, text2, max_length=DEFAULT_MAX_LENGTH, target_max_length=None):
-#     assert tokenizer.sep_token_id is not None
-#     target_max_length = target_max_length or max_length
-#     text = tokenizer.encode(text, truncation=True, max_length=max_length)
-#     text[-1] = tokenizer.sep_token_id
-#     text2 = tokenizer.encode(text2, truncation=True, max_length=target_max_length)
-#     return text+text2
+empty_tokens = []
+
+def _block_simply(blocks: List[List[int]], tokens: List[int], block_size=DEFAULT_BLOCK_SIZE, fill=empty_tokens):
+    # とりあえず、シンプルにブロックを分割する
+    for i in range(0, len(tokens) - block_size + 1, block_size):  
+        segmented = tokens[i : i + block_size]
+        blocks.append(segmented)
+    remaining = len(tokens) % block_size
+    if remaining == 0: # 最後の分割が揃っていればおしまい
+        return fill
+    remaining_tokens = tokens[-remaining:] + fill
+    while len(remaining_tokens) >= block_size:
+        blocks.append(remaining_tokens[:block_size])
+        remaining_tokens = remaining_tokens[block_size:]
+    return remaining_tokens
+
+def tokenize_block_sep(tokenizer, blocks: List[List[int]], text:str, block_size=DEFAULT_BLOCK_SIZE, fill=empty_tokens, sep='<seP>', overlap=0):
+    chunks = [tokenizer.convert_tokens_to_ids(tokenizer.tokenize(line)) for line in text.split(sep)]
+    chunks[-1] = tokenizer.build_inputs_with_special_tokens(chunks[-1])
+    chunk = []
+    for ids in chunks:
+        prev_length = len(chunk)
+        chunk.extend(ids)
+        if len(chunk) >= block_size:
+            blocks.append(chunk[:block_size])
+            if block_size - prev_length < overlap:
+                chunk = _block_simply(blocks, ids, block_size)
+            else:
+                chunk = _block_simply(blocks, chunk[block_size:], block_size)
+    if len(chunk) > 4:
+        return _block_simply(blocks, chunk, block_size, fill)
+    return fill
+
+def get_ellipsis_token_id(tokenizer, default_id):
+    if hasattr(tokenizer, 'ellipsis_token_id'):
+        return tokenizer.ellipsis_token_id
+    return default_id
+
+def tokenize_text(tokenizer, blocks, text, block_size=DEFAULT_BLOCK_SIZE):
+    inputs = tokenizer.encode(text)
+    if len(inputs) > block_size:
+        half_size = block_size // 2
+        prefix = inputs[:half_size]
+        suffix = inputs[-half_size:]
+        prefix[-1] = get_ellipsis_token_id(tokenizer, prefix[-1])
+        inputs = prefix + suffix
+    blocks.append(inputs)
+    return None
+
+def tokenize_pair(tokenizer, blocks, inputs, labels, block_size=DEFAULT_BLOCK_SIZE):
+    inputs = tokenizer.encode(inputs)
+    labels = tokenizer.encode(labels)
+    if len(labels) > block_size:
+        # ラベルの方が大きい場合は諦める
+        return None
+    if len(inputs)+len(labels) > block_size:
+        # ラベルは完全に残す
+        half_size = (block_size - len(labels)) // 2
+        prefix = inputs[:half_size]
+        suffix = inputs[-half_size:]
+        prefix[-1] = get_ellipsis_token_id(tokenizer, prefix[-1])
+        inputs = prefix + suffix
+    blocks.append(inputs+labels)
+    return None
+
+def tokenize_line(tokenizer, blocks, line:str, block_size=DEFAULT_BLOCK_SIZE, fill=empty_tokens,
+                  padding=False, jsonl_key=None, sep='<seP>', overlap=0):
+    if jsonl_key is None:
+        line = line.rstrip()
+    else:
+        d = json.loads(line)
+        if 'out' in d and 'in' in d:
+            return tokenize_pair(tokenizer, blocks, d['in'], d['out'], block_size=block_size)
+        if 'inputs' in d and 'labels' in d:
+            return tokenize_pair(tokenizer, blocks, d['inputs'], d['labels'], block_size=block_size)
+        line = d[jsonl_key]
+    if padding:
+        return tokenize_text(tokenizer, blocks, line, block_size=block_size)
+    else:
+        return tokenize_block_sep(tokenizer, blocks, line, block_size, fill, sep, overlap)
 
 def stat_tokens(counts):
     if len(counts) == 0:
@@ -249,35 +320,32 @@ class DatasetStore(object):
         self.save()
         verbose_print(f'Tokens: {self.n_tokens:,} Items: {self.n_items:,} Blocks: {self.block_size:,}')
 
-    # def append_block(self, text, fill=None, block_size=256, by_line=False, shuffle=True):
-    #     blocks, fill = tokenize_block(self.tokenizer, text, fill, block_size, by_line=by_line, shuffle=shuffle)
-    #     for b in blocks:
-    #         self.append(b)
-    #     return fill
+    def upload2(self, filename, padding=True, overlap=0, N=None, jsonl_key='text', sep='<seP>'):
+        if not filename.endswith('.jsonl') or not filename.endswith('.jsonl.gz'):
+            jsonl_key=None # jsonl でない
+        if N:
+            from tqdm import tqdm
+            pbar = tqdm(total=N, desc=filename)
+        fill=empty_tokens
+        with zopen(filename) as f:
+            line = f.readline()
+            c=1
+            while line:
+                blocks=[]
+                fill = tokenize_line(self.tokenizer, blocks, line, self.block_size, fill, jsonl_key=jsonl_key)
+                # line = _read_text_from_line(line, jsonl_text)
+                # line = _remove_heading_nL(line)
+                # blocks, fill = tokenize_block(self.tokenizer, line, fill, self.block_size, by_line=by_line, overlap=overlap)
+                self.extend(blocks)
+                line = f.readline()
+                c+=1
+                if N: 
+                    pbar.update()
+                    if c > N: break
+        if N:
+            pbar.close()
+        verbose_print(f'Tokens: {self.n_tokens:,} Items: {self.n_items:,} Blocks: {self.block_size:,}')
 
-    # def append_dict(self, d: List[int]):
-    #     self.bufs.append(d)
-    #     if len(self.bufs) == self.n_chunks:
-    #         self.save(save_config=False)
-
-    # def append_text(self, text, block_size=None, max_length=DEFAULT_MAX_LENGTH):
-    #     if isinstance(block_size, int):
-    #         self.append_block(text, block_size=block_size)
-    #     else:
-    #         self.append(tokenize_text(self.tokenizer, text, max_length=max_length))
-
-    # def append_pair(self, text, text2, max_length=DEFAULT_MAX_LENGTH, target_max_length=None):
-    #     self.append(tokenize_pair(self.tokenizer, text, text2, max_length=max_length))
-
-    # def __len__(self):
-    #     # 切り上げ
-    #     return (self.n_items + self.n_chunks - 1) // self.n_chunks
-
-    # def __getitem__(self, i):
-    #     return chunk_filename(self.cache_dir, i, self.version, self.file_ext, mkdir=False)
-
-#    cmd = "aria2c -x5 -o {0} {1}".format(url.split('/')[-1], url)
-#    subprocess.call(cmd, shell=True)
 
 def safe_join(dir, file):
     if dir.endswith('/'):
@@ -495,8 +563,6 @@ class Indexer(Dataset):
         idx = self.count
         self.count = (self.count + 1) % self.length
         return self.dataset[self.offset+idx]
-    
-
 
 
 def _make_mixer(datasets: List[Indexer]):
@@ -576,6 +642,79 @@ class DataComposer(Dataset):
 
 
 ## Seq2Seq
+
+EXTRA_IDS = [f'<extra_id_{i}>' for i in range(100)]
+
+class MSP(object):
+    def __init__(self, tokenizer, lambda_=3):
+        self.lambda_ = lambda_
+        self.extra_ids = tokenizer.convert_tokens_to_ids(EXTRA_IDS)
+        self.eos_token_id = tokenizer.eos_token_id
+        self.newline_id = tokenizer.convert_tokens_to_ids(['<nL>'])[0]
+
+    def __call__(self, data, max_length):
+        data = data.tolist()
+        inputs = tokens = []
+        outputs = masked = []
+        start=0
+        index=0
+        for length in np.random.poisson(self.lambda_, 1000):
+            end = start+max(1, length)
+            data_part = data[start:end]
+            tokens.extend(data_part)
+            if self.eos_token_id in data_part or self.newline_id in data_part:
+                masked.extend(data_part)
+            else:
+                masked.append(self.extra_ids[index%100])
+                index += 1
+                tokens,masked = masked, tokens
+            start = end
+            if start > len(data):
+                break
+        return {
+            "input_ids": torch.tensor(inputs[max_length//2], dtype=torch.long),
+            "labels": torch.tensor(outputs[max_length//2], dtype=torch.long),
+        }
+
+class DP(object):
+    def __init__(self, tokenizer, lambda_=5):
+        self.lambda_ = lambda_
+        self.extra_ids = tokenizer.convert_tokens_to_ids(EXTRA_IDS)
+        self.eos_token_id = tokenizer.eos_token_id
+        self.newline_id = tokenizer.convert_tokens_to_ids(['<nL>'])[0]
+
+    def __call__(self, data, max_length):
+        index = 0
+        start = 0
+        for length in np.random.poisson(self.lambda_, 1000):
+            start = start + max(1, length)
+            if start > max_length:
+                break
+            if data[start] != self.eos_token_id or data[start] != self.newline_id:
+                data[start] = self.extra_ids[index]
+                index+=1
+        return torch.tensor(data[:max_length].astype(np.int64), dtype=torch.long)
+
+class Seq2seq(object):
+    def __init__(self, tokenizer):
+        self.eos_token_id = tokenizer.eos_token_id
+
+    def __call__(self, data, max_length):
+        indices = np.where(data == self.eos_token_id)[0]
+        assert indices.size > 1, "seq2seqは、</s>で区切られた２文からなるべきです。"
+        index = indices[0]
+        inputs = data[:index+1]
+        labels = data[index+1:]
+        if len(inputs)+len(labels) >= max_length:
+            # 前半分と後ろ半分を連結する
+            half_size = (max_length - len(labels)) // 2
+            inputs = np.concatenate(inputs[:half_size], inputs[-half_size:])
+        return {
+            "input_ids": torch.tensor(inputs.astype(np.int64), dtype=torch.long),
+            "labels": torch.tensor(labels.astype(np.int64), dtype=torch.long),
+        }
+
+
 
 def build_inputs_for_seq2seq(data, max_length=None, target_max_length=None):
     target_max_length = target_max_length or max_length
