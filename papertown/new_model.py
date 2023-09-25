@@ -141,6 +141,17 @@ def train_model(model, tokenizer, max_length, use_fp16=False, use_flash=False):
     print_gpu_utilization()
 
 
+def tuika_T5(tokenizer=DEFAULT_TOKENIZER):
+    from transformers import T5Config, T5ForConditionalGeneration, AutoTokenizer, AutoModelForSeq2SeqLM
+
+    if isinstance(tokenizer, str):
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer, legacy=False, trust_remote_code=True, use_fast=False)
+
+    model = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-base").from_pretrained("google/flan-t5-base")
+    print_model(model)
+    return model
+
+
 def new_T5(d_model=512, d_kv=32, d_ff=1024, n_head=6, n_layers=12, max_length=2048, tokenizer=DEFAULT_TOKENIZER):
     from transformers import T5Config, T5ForConditionalGeneration, AutoTokenizer
 
