@@ -147,7 +147,7 @@ def tuika_T5(tokenizer=DEFAULT_TOKENIZER):
     if isinstance(tokenizer, str):
         tokenizer = AutoTokenizer.from_pretrained(tokenizer, legacy=False, trust_remote_code=True, use_fast=False)
 
-    model = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-base").from_pretrained("google/flan-t5-base")
+    model = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-base")
     print_model(model)
     return model
 
